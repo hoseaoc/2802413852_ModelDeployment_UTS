@@ -1,12 +1,13 @@
-import requests
+import os
+import pickle
+import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 # CONFIG
-API_BASE_URL = "http://localhost:8000"
-
 st.set_page_config(
-    page_title="PlacementIQ Client",
+    page_title="PlacementIQ",
     page_icon="🎓",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -59,21 +60,64 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 </style>
 """, unsafe_allow_html=True)
 
+# LOAD MODELS
+@st.cache_resource
+def load_models():
+    model_dir = os.path.join(os.path.dirname(__file__), "models")
+    clf_path  = os.path.join(model_dir, "best_classifier.pkl")
+    reg_path  = os.path.join(model_dir, "best_regressor.pkl")
 
+    clf, reg = None, None
+    if os.path.exists(clf_path):
+        with open(clf_path, "rb") as f:
+            clf = pickle.load(f)
+    if os.path.exists(reg_path):
+        with open(reg_path, "rb") as f:
+            reg = pickle.load(f)
+    return clf, reg
 
-# HELPER
-def call_api(endpoint: str, payload: dict) -> dict:
-    resp = requests.post(f"{API_BASE_URL}{endpoint}", json=payload, timeout=10)
-    resp.raise_for_status()
-    return resp.json()
+clf_model, reg_model = load_models()
 
-def check_health() -> bool:
-    try:
-        resp = requests.get(f"{API_BASE_URL}/health", timeout=5)
-        return resp.json().get("status") == "ok"
-    except Exception:
-        return False
+# FEATURE ENGINEERING
+FEATURE_COLS = [
+    "ssc_percentage", "hsc_percentage", "degree_percentage", "cgpa",
+    "entrance_exam_score", "technical_skill_score", "soft_skill_score",
+    "internship_count", "live_projects", "work_experience_months",
+    "certifications", "attendance_percentage", "backlogs",
+    "academic_avg", "overall_skill", "experience_score",
+    "high_cgpa", "clean_record", "gender_enc", "extra_enc",
+]
 
+def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["academic_avg"]     = (df["ssc_percentage"] + df["hsc_percentage"] + df["degree_percentage"]) / 3
+    df["overall_skill"]    = (df["technical_skill_score"] + df["soft_skill_score"]) / 2
+    df["experience_score"] = (
+        df["internship_count"]       * 10 +
+        df["work_experience_months"] * 0.5 +
+        df["live_projects"]          * 5 +
+        df["certifications"]         * 3
+    )
+    df["high_cgpa"]    = (df["cgpa"] >= 8.0).astype(int)
+    df["clean_record"] = (df["backlogs"] == 0).astype(int)
+    df["gender_enc"]   = df["gender"].map({"Female": 0, "Male": 1})
+    df["extra_enc"]    = df["extracurricular_activities"].map({"No": 0, "Yes": 1})
+    return df
+
+def predict_single(row: dict) -> dict:
+    df = pd.DataFrame([row])
+    df = engineer_features(df)
+    X  = df[FEATURE_COLS]
+
+    prob   = float(clf_model.predict_proba(X)[0][1])
+    label  = int(clf_model.predict(X)[0])
+    salary = None
+    if label == 1 and reg_model:
+        salary = float(reg_model.predict(X)[0])
+
+    return {"placed": label, "placed_prob": prob, "salary": salary}
+    
+# CHART
 def gauge_chart(prob: float) -> go.Figure:
     pct   = prob * 100
     color = "#34d399" if pct >= 50 else "#f87171"
@@ -101,39 +145,33 @@ def gauge_chart(prob: float) -> go.Figure:
     )
     return fig
 
-
 # SIDEBAR
 with st.sidebar:
     st.markdown('<div class="brand-header">PlacementIQ</div>', unsafe_allow_html=True)
-    st.markdown('<div class="brand-sub">Decoupled Client</div>', unsafe_allow_html=True)
+    st.markdown('<div class="brand-sub">ML Prediction Dashboard</div>', unsafe_allow_html=True)
 
     st.markdown("---")
-    API_BASE_URL = st.text_input("FastAPI Base URL", value=API_BASE_URL)
-
-    if st.button("Cek Koneksi API"):
-        if check_health():
-            st.success("API Terhubung!")
-        else:
-            st.error("Tidak bisa terhubung ke API.")
+    st.markdown("**Model Status**")
+    clf_ok = clf_model is not None
+    reg_ok = reg_model is not None
+    st.markdown(f"{'🟢' if clf_ok else '🔴'} Classifier `{'Loaded' if clf_ok else 'Not Found'}`")
+    st.markdown(f"{'🟢' if reg_ok else '🔴'} Regressor  `{'Loaded' if reg_ok else 'Not Found'}`")
 
     st.markdown("---")
-    mode = st.radio(
-        "Mode Prediksi",
-        ["Klasifikasi", "Regresi", "Full (Klasifikasi + Regresi)"]
-    )
-
-    st.markdown("---")
-    st.caption(f"Backend: {API_BASE_URL}")
-    st.caption("Soal 4 — Decoupled Architecture")
-
+    st.caption("Dataset: Student Placement (B.csv)")
+    st.caption("Soal 3 — Monolithic Deployment")
 
 # MAIN
 st.markdown('<div class="brand-header">PlacementIQ</div>', unsafe_allow_html=True)
-st.markdown('<div class="brand-sub">Student Placement & Salary Prediction — Decoupled</div>', unsafe_allow_html=True)
+st.markdown('<div class="brand-sub">Student Placement & Salary Prediction</div>', unsafe_allow_html=True)
+
+if not clf_ok:
+    st.error("⚠️ Model belum ditemukan. Pastikan file `models/best_classifier.pkl` tersedia.")
+    st.stop()
 
 st.markdown('<div class="section-title">Input Data Mahasiswa</div>', unsafe_allow_html=True)
 
-with st.form("form_prediction"):
+with st.form("prediction_form"):
     col1, col2, col3 = st.columns(3)
 
     with col1:
@@ -160,148 +198,84 @@ with st.form("form_prediction"):
         exp_months  = st.number_input("Work Experience (months)", min_value=0, max_value=60, value=6)
         certs       = st.number_input("Certifications",           min_value=0, max_value=20, value=3)
 
-    submitted = st.form_submit_button("Kirim ke API & Prediksi")
+    submitted = st.form_submit_button("Prediksi Sekarang")
 
-# PAYLOAD & HASIL
-
-payload = {
-    "gender"                    : gender,
-    "ssc_percentage"            : ssc,
-    "hsc_percentage"            : hsc,
-    "degree_percentage"         : deg,
-    "cgpa"                      : cgpa,
-    "entrance_exam_score"       : entrance,
-    "technical_skill_score"     : tech_skill,
-    "soft_skill_score"          : soft_skill,
-    "internship_count"          : internships,
-    "live_projects"             : projects,
-    "work_experience_months"    : exp_months,
-    "certifications"            : certs,
-    "attendance_percentage"     : attendance,
-    "backlogs"                  : backlogs,
-    "extracurricular_activities": extra,
-}
+# =============================================================================
+# HASIL
+# =============================================================================
 
 if submitted:
+    row = {
+        "gender"                    : gender,
+        "ssc_percentage"            : ssc,
+        "hsc_percentage"            : hsc,
+        "degree_percentage"         : deg,
+        "cgpa"                      : cgpa,
+        "entrance_exam_score"       : entrance,
+        "technical_skill_score"     : tech_skill,
+        "soft_skill_score"          : soft_skill,
+        "internship_count"          : internships,
+        "live_projects"             : projects,
+        "work_experience_months"    : exp_months,
+        "certifications"            : certs,
+        "attendance_percentage"     : attendance,
+        "backlogs"                  : backlogs,
+        "extracurricular_activities": extra,
+    }
+
+    result = predict_single(row)
+
     st.markdown("---")
     st.markdown('<div class="section-title">Hasil Prediksi</div>', unsafe_allow_html=True)
 
-    endpoint = {
-        "Klasifikasi"                 : "/predict/classification",
-        "Regresi"                     : "/predict/regression",
-        "Full (Klasifikasi + Regresi)": "/predict/full",
-    }[mode]
-    st.caption(f"POST {API_BASE_URL}{endpoint}")
+    # Banner
+    if result["placed"] == 1:
+        sal_text = f"Estimasi Salary: <b>{result['salary']:.2f} LPA</b>" if result["salary"] else ""
+        st.markdown(f"""<div class="result-placed">
+            <div class="result-title">✅ PLACED</div>
+            <div class="result-subtitle">{sal_text}</div>
+        </div>""", unsafe_allow_html=True)
+    else:
+        st.markdown(f"""<div class="result-not-placed">
+            <div class="result-title">❌ NOT PLACED</div>
+            <div class="result-subtitle">Probabilitas Placed: {result['placed_prob']*100:.1f}%</div>
+        </div>""", unsafe_allow_html=True)
 
-    try:
-        result = call_api(endpoint, payload)
+    st.markdown("")
 
-        # KLASIFIKASI 
-        if mode == "Klasifikasi":
-            prob  = result["placement_probability"]
-            label = result["placement_status"]
+    # Gauge + Metric cards
+    c1, c2 = st.columns(2)
+    with c1:
+        st.plotly_chart(gauge_chart(result["placed_prob"]), use_container_width=True)
+    with c2:
+        st.markdown("")
+        academic_avg  = (ssc + hsc + deg) / 3
+        overall_skill = (tech_skill + soft_skill) / 2
+        exp_score     = internships * 10 + exp_months * 0.5 + projects * 5 + certs * 3
 
-            if label == 1:
-                st.markdown(f"""<div class="result-placed">
-                    <div class="result-title">✅ PLACED</div>
-                    <div class="result-subtitle">Probabilitas: {prob*100:.1f}%</div>
-                </div>""", unsafe_allow_html=True)
-            else:
-                st.markdown(f"""<div class="result-not-placed">
-                    <div class="result-title">❌ NOT PLACED</div>
-                    <div class="result-subtitle">Probabilitas Placed: {prob*100:.1f}%</div>
-                </div>""", unsafe_allow_html=True)
+        m1, m2 = st.columns(2)
+        with m1:
+            st.markdown(f"""<div class="metric-card">
+                <div class="metric-label">Academic Avg</div>
+                <div class="metric-value blue">{academic_avg:.1f}</div>
+            </div>""", unsafe_allow_html=True)
+        with m2:
+            st.markdown(f"""<div class="metric-card">
+                <div class="metric-label">Overall Skill</div>
+                <div class="metric-value purple">{overall_skill:.1f}</div>
+            </div>""", unsafe_allow_html=True)
 
-            st.markdown("")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.plotly_chart(gauge_chart(prob), use_container_width=True)
-            with c2:
-                st.markdown("**Raw API Response**")
-                st.json(result)
+        st.markdown("")
 
-        # REGRESI
-        elif mode == "Regresi":
-            salary = result["predicted_salary_lpa"]
-
-            m1, m2, m3 = st.columns(3)
-            with m1:
-                st.markdown(f"""<div class="metric-card">
-                    <div class="metric-label">Predicted Salary</div>
-                    <div class="metric-value orange">{salary:.2f} LPA</div>
-                </div>""", unsafe_allow_html=True)
-            with m2:
-                st.markdown(f"""<div class="metric-card">
-                    <div class="metric-label">Per Bulan (Est.)</div>
-                    <div class="metric-value blue">{salary/12:.2f} LPA</div>
-                </div>""", unsafe_allow_html=True)
-            with m3:
-                st.markdown(f"""<div class="metric-card">
-                    <div class="metric-label">Range Est.</div>
-                    <div class="metric-value purple">{salary*0.9:.1f} – {salary*1.1:.1f}</div>
-                </div>""", unsafe_allow_html=True)
-
-            st.markdown("")
-            st.info(f"📝 {result['note']}")
-            st.markdown("**Raw API Response**")
-            st.json(result)
-
-        # FULL 
-        else:
-            prob   = result["placement_probability"]
-            label  = result["placement_status"]
-            salary = result["predicted_salary_lpa"]
-
-            if label == 1:
-                sal_text = f"Estimasi Salary: <b>{salary:.2f} LPA</b>" if salary else ""
-                st.markdown(f"""<div class="result-placed">
-                    <div class="result-title">✅ PLACED</div>
-                    <div class="result-subtitle">{sal_text}</div>
-                </div>""", unsafe_allow_html=True)
-            else:
-                st.markdown(f"""<div class="result-not-placed">
-                    <div class="result-title">❌ NOT PLACED</div>
-                    <div class="result-subtitle">Probabilitas Placed: {prob*100:.1f}%</div>
-                </div>""", unsafe_allow_html=True)
-
-            st.markdown("")
-            m1, m2, m3, m4 = st.columns(4)
-            with m1:
-                st.markdown(f"""<div class="metric-card">
-                    <div class="metric-label">Status</div>
-                    <div class="metric-value {'green' if label==1 else 'orange'}">{result['placement_label']}</div>
-                </div>""", unsafe_allow_html=True)
-            with m2:
-                st.markdown(f"""<div class="metric-card">
-                    <div class="metric-label">Probability</div>
-                    <div class="metric-value blue">{prob*100:.1f}%</div>
-                </div>""", unsafe_allow_html=True)
-            with m3:
-                sal_display = f"{salary:.2f}" if salary else "N/A"
-                st.markdown(f"""<div class="metric-card">
-                    <div class="metric-label">Est. Salary (LPA)</div>
-                    <div class="metric-value purple">{sal_display}</div>
-                </div>""", unsafe_allow_html=True)
-            with m4:
-                st.markdown(f"""<div class="metric-card">
-                    <div class="metric-label">CGPA</div>
-                    <div class="metric-value orange">{cgpa}</div>
-                </div>""", unsafe_allow_html=True)
-
-            st.markdown("")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.plotly_chart(gauge_chart(prob), use_container_width=True)
-            with c2:
-                st.markdown("**Raw API Response**")
-                st.json(result)
-
-        with st.expander("Lihat Payload yang Dikirim ke API"):
-            st.json(payload)
-
-    except requests.exceptions.ConnectionError:
-        st.error(f"Tidak bisa terhubung ke API. Pastikan FastAPI berjalan di: {API_BASE_URL}")
-    except requests.exceptions.HTTPError as e:
-        st.error(f"API Error {e.response.status_code}: {e.response.text}")
-    except Exception as e:
-        st.error(f"Error: {str(e)}")
+        m3, m4 = st.columns(2)
+        with m3:
+            st.markdown(f"""<div class="metric-card">
+                <div class="metric-label">Experience Score</div>
+                <div class="metric-value orange">{exp_score:.1f}</div>
+            </div>""", unsafe_allow_html=True)
+        with m4:
+            color = "green" if result["placed"] == 1 else "orange"
+            st.markdown(f"""<div class="metric-card">
+                <div class="metric-label">Placed Probability</div>
+                <div class="metric-value {color}">{result['placed_prob']*100:.1f}%</div>
+            </div>""", unsafe_allow_html=True)
