@@ -1,12 +1,3 @@
-"""
-app.py
-======
-Monolithic Streamlit App — Placement & Salary Prediction
-Muat model .pkl dari pipeline dan prediksi via:
-  1. Form manual (satu mahasiswa)
-  2. Upload CSV (batch prediksi)
-"""
-
 import os
 import pickle
 import numpy as np
@@ -16,7 +7,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from io import BytesIO
 
-# ── Page config ───────────────────────────────────────────────────────────────
+# Page config 
 st.set_page_config(
     page_title = "PlacementIQ",
     page_icon  = "🎓",
@@ -24,7 +15,7 @@ st.set_page_config(
     initial_sidebar_state = "expanded",
 )
 
-# ── Custom CSS ────────────────────────────────────────────────────────────────
+# Custom CSS 
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap');
@@ -413,7 +404,7 @@ if not clf_ok:
 
 
 # MODE 1: FORM MANUAL
-if mode == "Form Manual":
+if mode == "📝 Form Manual":
 
     st.markdown('<div class="section-title">Input Data Mahasiswa</div>', unsafe_allow_html=True)
     st.markdown("")
