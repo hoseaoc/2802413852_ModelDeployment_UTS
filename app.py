@@ -159,7 +159,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption("Dataset: Student Placement (B.csv)")
-    st.caption("Soal 3 — Monolithic Deployment")
+    st.caption("Soal 3 - Monolithic Deployment")
 
 # MAIN
 st.markdown('<div class="brand-header">PlacementIQ</div>', unsafe_allow_html=True)
